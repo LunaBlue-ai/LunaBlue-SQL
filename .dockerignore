@@ -1,0 +1,102 @@
+# ============================================================================
+# Docker Build Context Exclusions
+# ============================================================================
+#
+# PURPOSE:
+#   Exclude files from Docker build context to:
+#   - Improve build speed (smaller context sent to daemon)
+#   - Reduce image size (irrelevant files not copied)
+#   - Maintain security (sensitive files not included)
+#   - Better caching (context changes don't invalidate layers)
+#
+# PERSPECTIVE:
+#   - Maintainability: Clear rules prevent accidental inclusions
+#   - Business Value: Faster builds = faster deployments
+#   - Security: Reduces risk of accidental secret inclusion
+#
+# ============================================================================
+
+# Version Control
+.git
+.gitignore
+.gitattributes
+
+# Documentation (not needed in image)
+*.md
+README*
+LICENSE
+CHANGELOG
+docs/
+
+# CI/CD Files
+.github/
+.gitlab-ci.yml
+.circleci/
+.travis.yml
+Jenkinsfile
+
+# Development
+node_modules/
+.npm
+.cache/
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+.env.local
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*.swn
+*~
+.project
+.classpath
+
+# Testing
+test/
+tests/
+.pytest_cache/
+coverage/
+.coverage
+
+# Build Artifacts (usually)
+dist/
+build/
+*.o
+*.a
+*.so
+
+# System
+Thumbs.db
+*.log
+*.tmp
+
+# Docker related (not needed in build)
+docker-compose*.yml
+Dockerfile.dev
+.dockerignore
+
+# Kubernetes (not needed in image)
+k8s/
+helm/
+*.yaml
+*.yml
+kustomization.yaml
+
+# Terraform/IaC (not needed in image)
+terraform/
+*.tf
+*.tfvars
+
+# SSH/Secrets
+.ssh/
+secrets/
+*.pem
+*.key
+*.crt
+

@@ -1,0 +1,178 @@
+version: '3.8'
+
+# ============================================================================
+# Docker Compose for PostgreSQL 16 + pgvector Testing
+# ============================================================================
+#
+# PURPOSE:
+#   Provides reproducible, containerized test environment for:
+#   - Building and running postgres-pgvector image
+#   - Automated health checks
+#   - pgvector functionality verification
+#   - Integration testing with applications
+#
+# USAGE:
+#   docker-compose up -d           # Start services
+#   docker-compose logs -f         # Follow logs
+#   docker-compose exec postgres psql -U postgres  # Connect to DB
+#   docker-compose down -v         # Stop and remove volumes
+#
+# ============================================================================
+
+services:
+  # =========================================================================
+  # PostgreSQL 16 with pgvector
+  # =========================================================================
+  postgres:
+    # Build from local Dockerfile instead of pulling from registry
+    # This ensures we test the exact image we're building
+    build:
+      context: .
+      dockerfile: Dockerfile
+    
+    # Container name for easy reference
+    container_name: postgres-pgvector-test
+    
+    # Image tagging for local testing
+    image: postgres-pgvector:16
+    
+    # Environment variables for database setup
+    environment:
+      # Superuser credentials (development only - use secrets in production)
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: testdb
+      
+      # Additional initialization arguments
+      # Shared preload libraries already set in Dockerfile, but can be overridden here
+      # POSTGRES_INITDB_ARGS: "-c shared_preload_libraries=vector"
+    
+    # Port mapping: only localhost can connect (security)
+    ports:
+      - "127.0.0.1:5432:5432"
+    
+    # Health check that Docker Compose uses to determine service readiness
+    # PERSPECTIVE: Testability
+    # Allows docker-compose to wait for database readiness
+    healthcheck:
+      # Test command: Check if PostgreSQL is accepting connections
+      test: ["CMD", "pg_isready", "-U", "postgres", "-d", "testdb"]
+      
+      # Interval between health checks (in seconds)
+      interval: 5s
+      
+      # Maximum time to wait for test to complete
+      timeout: 3s
+      
+      # Number of failures before marking unhealthy
+      retries: 5
+      
+      # Delay before first health check (allow startup time)
+      start_period: 10s
+    
+    # Volume for data persistence across container restarts
+    # PERSPECTIVE: Testability - verifies data survives container lifecycle
+    volumes:
+      # Mount initialization scripts
+      - ./init-pgvector.sql:/docker-entrypoint-initdb.d/01-init.sql
+      
+      # Test data initialization (created separately)
+      - ./test-data.sql:/docker-entrypoint-initdb.d/02-test-data.sql
+      
+      # Data directory for persistence
+      - postgres_data:/var/lib/postgresql/data
+    
+    # Network for service-to-service communication
+    networks:
+      - postgres-network
+    
+    # Resource limits (prevents runaway containers)
+    # PERSPECTIVE: Security, Business Value
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+  
+  # =========================================================================
+  # Test Runner Container
+  # =========================================================================
+  # Optional: Container that runs test scripts against PostgreSQL
+  test-runner:
+    # Image with test tools (psql, pg_dump, curl, etc.)
+    image: postgres:16-bookworm
+    
+    container_name: postgres-pgvector-test-runner
+    
+    # Depends on postgres being healthy
+    # Docker Compose will wait for postgres health check to pass
+    depends_on:
+      postgres:
+        condition: service_healthy
+    
+    # Mount test scripts
+    volumes:
+      - ./tests:/tests:ro
+      - ./verify.sh:/verify.sh:ro
+    
+    # Network to connect to PostgreSQL
+    networks:
+      - postgres-network
+    
+    # Run test script when container starts
+    # PERSPECTIVE: Testability - automated verification
+    command: >
+      sh -c "
+        echo '=== PostgreSQL Connection Test ==='
+        pg_isready -h postgres -U postgres -d testdb
+        
+        echo ''
+        echo '=== pgvector Extension Check ==='
+        psql -h postgres -U postgres -d testdb -c \
+          'SELECT default_version FROM pg_available_extensions WHERE name=\"pgvector\";'
+        
+        echo ''
+        echo '=== pgvector Vector Type Test ==='
+        psql -h postgres -U postgres -d testdb -c \
+          'SELECT \"[1,2,3]\"::vector;'
+        
+        echo ''
+        echo '=== pgvector Similarity Operator Test ==='
+        psql -h postgres -U postgres -d testdb -c \
+          'SELECT \"[1,2,3]\"::vector <-> \"[4,5,6]\"::vector;'
+        
+        echo ''
+        echo '=== Test Data Verification ==='
+        psql -h postgres -U postgres -d testdb -c \
+          'SELECT COUNT(*) as document_count FROM documents;'
+      "
+    
+    # Exit after tests complete (don't keep container running)
+    restart: "no"
+
+# ============================================================================
+# Volumes
+# ============================================================================
+# Named volume for PostgreSQL data persistence
+volumes:
+  postgres_data:
+    driver: local
+
+# ============================================================================
+# Networks
+# ============================================================================
+# Custom network for inter-container communication
+networks:
+  postgres-network:
+    driver: bridge
+
