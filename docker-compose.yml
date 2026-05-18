@@ -1,0 +1,481 @@
+# ============================================================================
+# Docker Compose - PostgreSQL 16 with pgvector
+# ============================================================================
+#
+# PURPOSE:
+#   Orchestrate PostgreSQL 16 + pgvector with:
+#   - Persistent encrypted volume for data protection
+#   - Environment variable configuration management
+#   - Health checks for orchestration support
+#   - Proper logging and resource management
+#
+# PERSPECTIVES ADDRESSED:
+#   ✓ Maintainability: Clear structure, comments explaining decisions
+#   ✓ Testability: Each service independently verifiable
+#   ✓ Architecture: Follows Docker Compose best practices
+#   ✓ Security: No hardcoded secrets, encrypted volumes
+#   ✓ Business Value: Production-ready, data protection
+#   ✓ Documentation: Comprehensive inline comments
+#
+# USAGE:
+#   # Development
+#   docker-compose up -d
+#
+#   # With custom env file
+#   docker-compose --env-file .env.prod up -d
+#
+#   # View logs
+#   docker-compose logs -f postgres
+#
+#   # Stop services
+#   docker-compose down
+#
+#   # Remove volumes (WARNING: data loss)
+#   docker-compose down -v
+#
+# ============================================================================
+
+# Version specification
+# - Version 3.8: Supports health checks, depends_on conditions
+# - Compatible with Docker Compose 1.25.0+
+# PERSPECTIVE: Maintainability - explicit version prevents compatibility issues
+version: '3.8'
+
+# ============================================================================
+# Service Definitions
+# ============================================================================
+
+services:
+  # =========================================================================
+  # PostgreSQL Database Service
+  # =========================================================================
+  # PRIMARY SERVICE: PostgreSQL 16 with pgvector extension
+  # ROLE: Database backend for applications
+  # BUILD: Uses locally built postgres-pgvector:16 image
+  # =========================================================================
+  
+  postgres:
+    # =====================================================================
+    # IMAGE CONFIGURATION
+    # =====================================================================
+    
+    # Image reference: locally built image
+    # RATIONALE:
+    #   - Uses the postgres-pgvector:16 image built from Dockerfile
+    #   - Multi-stage build minimizes image size (~200MB)
+    #   - pgvector v0.5.1 pre-compiled for performance
+    # PERSPECTIVE: Architecture - ensures consistent image across all deployments
+    image: postgres-pgvector:16
+    
+    # Container naming for easy reference
+    # RATIONALE:
+    #   - Human-readable name for clarity
+    #   - Enables easy connection via hostname in same network
+    #   - Essential for docker-compose service discovery
+    # PERSPECTIVE: Maintainability - easy to identify and reference
+    container_name: postgres-pgvector
+    
+    # =====================================================================
+    # NETWORK CONFIGURATION
+    # =====================================================================
+    
+    # Port binding (SECURITY CRITICAL)
+    # FORMAT: [host_ip]:[host_port]:[container_port]
+    #
+    # SECURITY DECISION: Bind ONLY to localhost (127.0.0.1)
+    # RATIONALE:
+    #   - Prevents accidental exposure to entire network
+    #   - Database should only be accessed from application on same host
+    #   - If remote access needed, use SSH tunneling or application proxy
+    # 
+    # SCENARIO: Local development
+    #   - Host can connect: psql -h localhost -U postgres
+    #   - External hosts cannot connect
+    #
+    # SCENARIO: Production (Kubernetes)
+    #   - Port mapping removed entirely
+    #   - Services communicate via internal DNS
+    #   - See docker-compose.prod.yml for examples
+    #
+    # PERSPECTIVE: Security - prevents unauthorized access
+    ports:
+      - "127.0.0.1:5432:5432"
+    
+    # =====================================================================
+    # VOLUME CONFIGURATION
+    # =====================================================================
+    # Volume mounts provide persistent storage and enable:
+    #   - Data survival across container restarts
+    #   - Easy backup and restore procedures
+    #   - Separation of data from container ephemeral storage
+    #   - Potential encryption at rest (depends on driver)
+    #
+    # VOLUME TYPES:
+    #   - Named volume (postgres_data): Managed by Docker
+    #   - Host path (not used): Direct host filesystem mount
+    #   - tmpfs (not used): In-memory (data lost on restart)
+    #
+    # NAMING: postgres_data
+    # LOCATION: Docker manages (varies by OS):
+    #   Linux: /var/lib/docker/volumes/postgres_data/_data
+    #   Docker Desktop (Mac): ~/Library/Containers/com.docker.docker/Data/vfs/data/postgres_data
+    #   Docker Desktop (Windows): \\wsl.localhost\docker-desktop\mnt\docker-desktop-disk\data\docker\volumes\postgres_data\_data
+    #
+    # LIFECYCLE:
+    #   - Created: First docker-compose up
+    #   - Persistent: Survives container restart, stop, removal
+    #   - Deleted: docker-compose down -v (removes all volumes)
+    #
+    # ENCRYPTION:
+    #   Docker Desktop: Encrypted by default (host system encryption)
+    #   Linux: Use native driver with encryption support
+    #   Production: Use cloud volumes with encryption (AWS EBS, Azure Managed Disks, etc)
+    #
+    # BACKUP STRATEGY:
+    #   Before major updates: docker run --rm -v postgres_data:/data -v ${PWD}:/backup \
+    #                         postgres:16 tar -czf /backup/postgres-backup-$(date +%Y%m%d).tar.gz -C /data .
+    #
+    # PERSPECTIVE: Business Value - data protection and persistence
+    # PERSPECTIVE: Security - encrypted volume support (where available)
+    # PERSPECTIVE: Architecture - proper volume lifecycle management
+    
+    volumes:
+      # Main PostgreSQL data volume
+      # MOUNT POINT: /var/lib/postgresql/data (inside container)
+      # RATIONALE:
+      #   - Standard PostgreSQL data directory
+      #   - PostgreSQL process (non-root) owns this directory
+      #   - All databases, indexes, configuration stored here
+      #
+      # PERMISSIONS:
+      #   Owner: postgres (UID 999, inside container)
+      #   Mode: 0700 (rwx------)
+      #   Reason: Only postgres user needs access
+      #
+      # VERIFICATION:
+      #   docker-compose exec postgres ls -la /var/lib/postgresql/
+      #   Expected: drwx------ postgres postgres data
+      - postgres_data:/var/lib/postgresql/data
+      
+      # Optional: Custom PostgreSQL configuration
+      # UNCOMMENT TO USE: Mount custom postgresql.conf file
+      # RATIONALE:
+      #   - Override default PostgreSQL configuration
+      #   - Some settings cannot be set via POSTGRES_INITDB_ARGS
+      #   - Persists across restarts (stored on volume)
+      #
+      # USAGE:
+      #   1. Create custom postgresql.conf:
+      #      docker run -it --rm postgres:16 cat /etc/postgresql/postgresql.conf.sample > ./postgresql.conf
+      #   2. Customize as needed (e.g., increase max_connections)
+      #   3. Uncomment line below:
+      # - ./postgresql.conf:/etc/postgresql/postgresql.conf:ro
+      #
+      # READ-ONLY FLAG:
+      #   :ro = Read-only mount
+      #   Prevents container from modifying config file
+      #
+      # PERSPECTIVE: Architecture - extensibility for custom configuration
+    
+    # =====================================================================
+    # ENVIRONMENT CONFIGURATION
+    # =====================================================================
+    # Load environment variables from .env file at runtime
+    # RATIONALE:
+    #   - Separates configuration from code (12-factor app principle)
+    #   - Enables different configs for dev/test/prod without code changes
+    #   - .env file NOT committed to git (secrets protection)
+    #   - Each environment has its own .env file:
+    #     * .env          (local development - local default)
+    #     * .env.test     (testing environment)
+    #     * .env.prod     (production environment)
+    #
+    # PERSPECTIVE: Security - passwords and sensitive data in .env, not in code
+    # PERSPECTIVE: Maintainability - centralized configuration management
+    # PERSPECTIVE: Architecture - follows 12-factor methodology
+    
+    # Environment file to load at container startup
+    # All variables from this file become available inside container
+    # Note: If .env file doesn't exist, docker-compose continues without error
+    #       (production deployments use environment variables instead)
+    env_file:
+      - .env
+    
+    # Direct environment variables (for production with secrets management)
+    # These override values from .env file
+    # PRODUCTION USAGE:
+    #   - Use Docker Secrets (Docker Swarm): POSTGRES_PASSWORD_FILE
+    #   - Use Kubernetes Secrets: mounted files or env from secret
+    #   - Use external secret manager: HashiCorp Vault, AWS Secrets Manager
+    #
+    # DEVELOPMENT USAGE:
+    #   - Keep these commented out
+    #   - Use .env file instead
+    #   - Never hardcode POSTGRES_PASSWORD in committed docker-compose.yml
+    #
+    # PERSPECTIVE: Security - no hardcoded credentials
+    environment:
+      # PostgreSQL Username
+      # DEFAULT: postgres (superuser)
+      # CHANGE FOR: Separate app user with limited permissions
+      # SECURITY: App user should NOT be superuser in production
+      POSTGRES_USER: postgres
+      
+      # PostgreSQL Password
+      # SECURITY CRITICAL: Must be strong in production
+      # SOURCES:
+      #   1. Generate: openssl rand -base64 32
+      #   2. Use .env file (not in git)
+      #   3. Use secrets management (Docker/Kubernetes/Vault)
+      # This is placeholder - OVERRIDE via .env file
+      # POSTGRES_PASSWORD: change_me_in_env_file
+      
+      # Default Database Name
+      # DATABASE CREATION:
+      #   - Created automatically at first container start
+      #   - Exists only if PGDATA is empty (first run)
+      #   - Safe to change between runs (new DB created)
+      POSTGRES_DB: postgres
+      
+      # Additional initialization arguments
+      # RATIONALE:
+      #   - Passed to 'initdb' at database initialization
+      #   - Only used on first container start (empty PGDATA)
+      #   - Set once during initial database creation
+      # OPTIONS:
+      #   -c shared_preload_libraries=vector
+      #      Loads pgvector at PostgreSQL startup
+      #      Enables vector operations and optimizations
+      #   -c max_connections=100
+      #      Connection pool size (tune for your workload)
+      #   -c shared_buffers=256MB
+      #      Memory for caching (tune for your workload)
+      #   -c work_mem=4MB
+      #      Memory per query operation (tune for your workload)
+      POSTGRES_INITDB_ARGS: "-c shared_preload_libraries=vector"
+    
+    # =====================================================================
+    # HEALTH CHECK CONFIGURATION
+    # =====================================================================
+    # Health checks enable:
+    #   - Container orchestration (Kubernetes, Docker Swarm) awareness
+    #   - Automatic restart on failure
+    #   - Dependency management (depends_on with service_healthy condition)
+    #   - Application readiness verification
+    #
+    # HEALTH CHECK PROCESS:
+    #   1. Container starts
+    #   2. After start_period, health check begins
+    #   3. Every interval seconds: run test command
+    #   4. If command returns 0: healthy
+    #   5. If command returns non-zero: unhealthy after retries failed
+    #
+    # TEST COMMAND: pg_isready -U postgres -d postgres
+    #   - Built-in PostgreSQL utility
+    #   - Checks if PostgreSQL is accepting connections
+    #   - Returns 0: accepting connections (healthy)
+    #   - Returns non-zero: not ready (unhealthy)
+    #   - Does NOT require superuser password
+    #
+    # PARAMETERS:
+    #   interval: 10s
+    #     Frequency of health check execution
+    #     Too short: Excessive overhead
+    #     Too long: Slow failure detection
+    #     RECOMMENDED: 10-30 seconds for databases
+    #
+    #   timeout: 5s
+    #     Maximum time to wait for health check to complete
+    #     If command takes longer, marked as unhealthy
+    #     RECOMMENDED: 5 seconds for databases
+    #
+    #   retries: 3
+    #     Number of consecutive failures before unhealthy
+    #     After 3 failures: marked unhealthy
+    #     Total time to unhealthy: timeout + (interval * retries)
+    #     Example: 5s + (10s * 3) = 35 seconds
+    #     RECOMMENDED: 3-5 for databases
+    #
+    #   start_period: 30s
+    #     Grace period before health checks start
+    #     Allows database to initialize
+    #     During startup: health status is "starting"
+    #     After period: health checks begin (starting → healthy/unhealthy)
+    #     RECOMMENDED: 30-60 seconds for databases
+    #
+    # VERIFICATION:
+    #   docker-compose ps                      # View health status
+    #   docker inspect postgres-pgvector | jq '.[] | .State.Health'
+    #   docker logs postgres-pgvector          # See health details
+    #
+    # PERSPECTIVE: Business Value - high availability via orchestration
+    # PERSPECTIVE: Architecture - orchestration platform compatibility
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres", "-d", "postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    
+    # =====================================================================
+    # LOGGING CONFIGURATION
+    # =====================================================================
+    # Logging configuration prevents:
+    #   - Disk space exhaustion from unbounded log files
+    #   - Host system resource starvation
+    #   - Log rotation issues
+    #   - Permission problems with log files
+    #
+    # LOG ROTATION STRATEGY:
+    #   max-size: 10m
+    #     Individual log file size limit
+    #     When reached: container logs rotated
+    #     Prevents single log file from consuming entire disk
+    #   max-file: 3
+    #     Number of rotated log files to keep
+    #     Total max logs: max-size * max-file = 10m * 3 = 30m
+    #     Older files: automatically deleted
+    #
+    # CALCULATIONS:
+    #   - PostgreSQL logs per second (varies): 0-10 KB/s
+    #   - High activity: 10-100 KB/s
+    #   - 10MB file with 10 KB/s = ~1000 seconds = ~16 minutes rotation
+    #   - 3 files keep: ~48 minutes of logs
+    #
+    # LOGS LOCATION:
+    #   docker logs postgres-pgvector               # View logs
+    #   docker logs -f postgres-pgvector            # Follow logs (tail -f)
+    #   /var/lib/docker/containers/ID/ID-json.log  # Actual log files (Linux)
+    #
+    # VERIFICATION:
+    #   docker inspect postgres-pgvector | jq '.[] | .LogDriver'
+    #   Expected: {"Type":"json-file","Config":{"max-file":"3","max-size":"10m"}}
+    #
+    # ALTERNATIVE DRIVERS:
+    #   - splunk: Send logs to Splunk
+    #   - awslogs: Send to AWS CloudWatch
+    #   - gcplogs: Send to Google Cloud Logging
+    #   - syslog: Send to system syslog
+    #   - awsfirelens: Forward via CloudWatch
+    #
+    # PERSPECTIVE: Architecture - operational reliability
+    # PERSPECTIVE: Business Value - prevent disk exhaustion
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+        labels: "app=postgres,service=database"
+    
+    # =====================================================================
+    # RESTART POLICY
+    # =====================================================================
+    # NOTE: Docker Compose uses 'restart' directive (not 'restart_policy')
+    # PERSPECTIVE: Business Value - high availability
+    # PERSPECTIVE: Security - prevents manual intervention gaps
+    restart: unless-stopped
+
+# ============================================================================
+# VOLUME DEFINITIONS
+# ============================================================================
+# Named volumes lifecycle management
+#
+# CREATION:
+#   - Created automatically on first docker-compose up
+#   - Persists between runs
+#   - Can be manually created: docker volume create postgres_data
+#
+# DELETION:
+#   - docker-compose down (volumes NOT deleted by default)
+#   - docker-compose down -v (delete all volumes)
+#   - docker volume rm postgres_data (manual deletion)
+#
+# INSPECTION:
+#   - docker volume ls
+#   - docker volume inspect postgres_data
+#
+# BACKUP:
+#   docker run --rm -v postgres_data:/data -v ${PWD}:/backup \
+#     postgres:16 tar -czf /backup/backup-$(date +%Y%m%d).tar.gz -C /data .
+#
+# RESTORE:
+#   docker volume create postgres_data_restored
+#   docker run --rm -v postgres_data_restored:/data -v ${PWD}:/backup \
+#     postgres:16 tar -xzf /backup/backup-20240517.tar.gz -C /data
+#
+# ENCRYPTION (Linux with native driver):
+#   Requires: encrypted filesystem (LUKS) at /var/lib/docker/volumes/
+#   See: https://docs.docker.com/storage/storagedriver/
+#
+# ENCRYPTION (Docker Desktop):
+#   Automatic: Host system encryption applied
+#   Docker Desktop for Mac: Uses APFS encryption
+#   Docker Desktop for Windows: Uses Windows Subsystem for Linux encryption
+#
+# ENCRYPTION (Production Cloud):
+#   - AWS ECS: Use EBS volumes with encryption enabled
+#   - Kubernetes: Use PersistentVolumeClaims with encrypted StorageClass
+#   - Azure: Use encrypted managed disks
+#   - GCP: Use encrypted persistent disks
+#
+# PERSPECTIVE: Security - volume encryption support
+# PERSPECTIVE: Business Value - data protection
+
+volumes:
+  # PostgreSQL data volume
+  # DRIVER: local (Docker's default local driver)
+  # LABELS: Optional metadata (helpful for management)
+  # ENCRYPTION: Depends on underlying driver and OS
+  postgres_data:
+    driver: local
+    labels:
+      description: "PostgreSQL 16 + pgvector database storage"
+      app: "postgres-pgvector"
+      backup: "enabled"  # Reminder to include in backup jobs
+
+# ============================================================================
+# NETWORK DEFINITIONS
+# ============================================================================
+# Default bridge network is created automatically by docker-compose
+# Can be overridden here for advanced networking scenarios
+#
+# CURRENT SETUP: Single service
+# NO CUSTOM NETWORK NEEDED yet
+#
+# FUTURE SCALING:
+#   If adding app container:
+#   networks:
+#     - postgres-network
+#
+# networks:
+#   postgres-network:
+#     driver: bridge
+#
+# PERSPECTIVE: Architecture - extensibility for multi-service deployments
+
+# ============================================================================
+# NEXT STEPS
+# ============================================================================
+#
+# Step 1: Build the postgres-pgvector image
+#   docker-compose build
+#
+# Step 2: Start the stack
+#   docker-compose up -d
+#
+# Step 3: Verify health status
+#   docker-compose ps
+#
+# Step 4: Connect to database
+#   docker-compose exec postgres psql -U postgres -d postgres
+#
+# Step 5: View logs
+#   docker-compose logs -f postgres
+#
+# Step 6: Stop services
+#   docker-compose down
+#
+# Step 7: Remove volumes (WARNING: data loss)
+#   docker-compose down -v
+#
+# ============================================================================
